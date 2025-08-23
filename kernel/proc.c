@@ -34,12 +34,12 @@ procinit(void)
       // Allocate a page for the process's kernel stack.
       // Map it high in memory, followed by an invalid
       // guard page.
-      char *pa = kalloc();
-      if(pa == 0)
-        panic("kalloc");
-      uint64 va = KSTACK((int) (p - proc));
-      kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
-      p->kstack = va;
+      // char *pa = kalloc();
+      // if(pa == 0)
+      //   panic("kalloc");
+      // uint64 va = KSTACK((int) (p - proc));
+      // kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+      // p->kstack = va;
   }
   kvminithart();
 }
@@ -94,6 +94,9 @@ allocproc(void)
 {
   struct proc *p;
 
+  char *_ukstack_pa;
+  uint64 _ukstack_va;
+
   for(p = proc; p < &proc[NPROC]; p++) {
     acquire(&p->lock);
     if(p->state == UNUSED) {
@@ -113,9 +116,23 @@ found:
     return 0;
   }
 
+  p->kpagetable = ukvminit();
+  if(p->kpagetable == 0){
+    goto lab_freeproc;
+  }
+
+  _ukstack_pa = kalloc();
+  if(_ukstack_pa == 0){
+    goto lab_freeproc;
+  }
+  _ukstack_va = KSTACK((int) (p - proc));
+  ukvmmap(p->kpagetable, _ukstack_va, (uint64)_ukstack_pa, PGSIZE, PTE_R | PTE_W);
+  p->kstack = _ukstack_va;
+
   // An empty user page table.
   p->pagetable = proc_pagetable(p);
   if(p->pagetable == 0){
+lab_freeproc:
     freeproc(p);
     release(&p->lock);
     return 0;
@@ -141,6 +158,8 @@ freeproc(struct proc *p)
   p->trapframe = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+  if(p->kpagetable)
+    free_ukpagetable(p->kpagetable, p->kstack);
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -473,7 +492,14 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+
+#define MAKE_SATP(pagetable) (SATP_SV39 | (((uint64)pagetable) >> 12))
+        w_satp(MAKE_SATP(p->kpagetable));
+        sfence_vma();
+
         swtch(&c->context, &p->context);
+
+        kvminithart();
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.
