@@ -79,7 +79,7 @@ inline void _ukvmmap(pagetable_t kpagetable, uint64 va, uint64 pa, uint64 sz, in
   mappages(kpagetable, va, sz, pa, perm);
 }
 
-void freewalk(pagetable_t pagetable);
+void ukfreewalk(pagetable_t pagetable);
 void free_ukpagetable(pagetable_t pagetable, uint64 kstack)
 {
   uvmunmap( pagetable, UART0, PGSIZE/PGSIZE, 0);
@@ -92,7 +92,7 @@ void free_ukpagetable(pagetable_t pagetable, uint64 kstack)
 
   uvmunmap( pagetable, kstack, PGSIZE/PGSIZE, 1);
 
-  freewalk(pagetable);
+  ukfreewalk(pagetable);
 
   // _free_ukpagetable(pagetable, 2);
 }
@@ -384,6 +384,25 @@ freewalk(pagetable_t pagetable)
   kfree((void*)pagetable);
 }
 
+void
+ukfreewalk(pagetable_t pagetable)
+{
+  // there are 2^9 = 512 PTEs in a page table.
+  for(int i = 0; i < 512; i++){
+    pte_t pte = pagetable[i];
+    if((pte & PTE_V) && (pte & (PTE_R|PTE_W|PTE_X)) == 0){
+      // this PTE points to a lower-level page table.
+      uint64 child = PTE2PA(pte);
+      ukfreewalk((pagetable_t)child);
+      pagetable[i] = 0;
+    }
+    //  else if(pte & PTE_V){
+    //   panic("freewalk: leaf");
+    // }
+  }
+  kfree((void*)pagetable);
+}
+
 // Free user memory pages,
 // then free page-table pages.
 void
@@ -430,6 +449,27 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   return -1;
 }
 
+int
+ukvmcopy(pagetable_t upagetable, pagetable_t kpagetable, uint64 sz, uint64 newsz)
+{
+  pte_t *pte_to, *pte_from;
+  uint64 pa, i;
+  uint flags;
+
+  for(i = sz; i < newsz; i += PGSIZE){
+    if((pte_from = walk(upagetable, i, 0)) == 0)
+      panic("ukvmcopy: pte should exist");
+    if((*pte_from & PTE_V) == 0)
+      panic("ukvmcopy: page not present");
+    pa = PTE2PA(*pte_from);
+    flags = PTE_FLAGS(*pte_from);
+
+    pte_to = walk(kpagetable, i, 1);
+    *pte_to = PA2PTE(pa) | (flags & (~PTE_U));
+  }
+  return 0;
+}
+
 // mark a PTE invalid for user access.
 // used by exec for the user stack guard page.
 void
@@ -474,23 +514,7 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
-  uint64 n, va0, pa0;
-
-  while(len > 0){
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    n = PGSIZE - (srcva - va0);
-    if(n > len)
-      n = len;
-    memmove(dst, (void *)(pa0 + (srcva - va0)), n);
-
-    len -= n;
-    dst += n;
-    srcva = va0 + PGSIZE;
-  }
-  return 0;
+  return copyin_new(pagetable, dst, srcva, len);
 }
 
 // Copy a null-terminated string from user to kernel.
@@ -500,38 +524,5 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 int
 copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 {
-  uint64 n, va0, pa0;
-  int got_null = 0;
-
-  while(got_null == 0 && max > 0){
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    n = PGSIZE - (srcva - va0);
-    if(n > max)
-      n = max;
-
-    char *p = (char *) (pa0 + (srcva - va0));
-    while(n > 0){
-      if(*p == '\0'){
-        *dst = '\0';
-        got_null = 1;
-        break;
-      } else {
-        *dst = *p;
-      }
-      --n;
-      --max;
-      p++;
-      dst++;
-    }
-
-    srcva = va0 + PGSIZE;
-  }
-  if(got_null){
-    return 0;
-  } else {
-    return -1;
-  }
+  return copyinstr_new( pagetable, dst, srcva, max);
 }

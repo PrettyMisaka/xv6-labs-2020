@@ -158,6 +158,7 @@ void            uartputc_sync(int);
 int             uartgetc(void);
 
 // vm.c
+pte_t *         walk(pagetable_t pagetable, uint64 va, int alloc);
 pagetable_t     ukvminit(void);
 void            free_ukpagetable(pagetable_t pagetable, uint64 kstack);
 void            ukvmmap(pagetable_t pagetable, uint64 va, uint64 pa, uint64 sz, int perm);
@@ -174,6 +175,7 @@ uint64          uvmalloc(pagetable_t, uint64, uint64);
 uint64          uvmdealloc(pagetable_t, uint64, uint64);
 #ifdef SOL_COW
 #else
+int             ukvmcopy(pagetable_t , pagetable_t , uint64 , uint64 );
 int             uvmcopy(pagetable_t, pagetable_t, uint64);
 #endif
 void            uvmfree(pagetable_t, uint64);
@@ -199,6 +201,9 @@ void            virtio_disk_intr(void);
 #define NELEM(x) (sizeof(x)/sizeof((x)[0]))
 
 
+//vmcopin.c
+int             copyin_new(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len);
+int             copyinstr_new(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max);
 
 // stats.c
 void            statsinit(void);
