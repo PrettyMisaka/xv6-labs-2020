@@ -29,6 +29,9 @@ trapinithart(void)
   w_stvec((uint64)kernelvec);
 }
 
+void restore_trapframe();
+int usertrap_sigalarm_setup();
+
 //
 // handle an interrupt, exception, or system call from user space.
 // called from trampoline.S
@@ -67,6 +70,11 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+    if(which_dev == 2 && p->alarm_status == ALARM_IDLE )
+    {
+      if(usertrap_sigalarm_setup())
+        p->alarm_status = ALARM_START;
+    }
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
@@ -80,6 +88,12 @@ usertrap(void)
   if(which_dev == 2)
     yield();
 
+  if(p->alarm_status == ALARM_STOP)
+  {
+    p->alarm_status = ALARM_IDLE;
+    restore_trapframe();
+  }
+
   usertrapret();
 }
 
@@ -90,6 +104,11 @@ void
 usertrapret(void)
 {
   struct proc *p = myproc();
+  if(p->alarm_status == ALARM_START)
+  {
+    p->alarm_status = ALARM_RUNNING;
+    p->trapframe->epc = p->alarm_handler;
+  }
 
   // we're about to switch the destination of traps from
   // kerneltrap() to usertrap(), so turn off interrupts until
@@ -216,5 +235,47 @@ devintr()
   } else {
     return 0;
   }
+}
+
+int save_trapframe()
+{
+  struct proc *p;
+  
+  p = myproc();
+  if(p->saved_trapframe == 0)
+    p->saved_trapframe = (struct trapframe *)kalloc();
+  if(p->saved_trapframe == 0)
+    return -1;
+
+  memmove(p->saved_trapframe, p->trapframe, sizeof(struct trapframe));
+  return 0;
+}
+
+void restore_trapframe()
+{
+  struct proc *p;
+
+  p = myproc();
+  if(p->saved_trapframe == 0)
+    panic("p->saved_trapframe is NULL\n");
+
+  memmove(p->trapframe, p->saved_trapframe, sizeof(struct trapframe));
+}
+
+int usertrap_sigalarm_setup()
+{
+  struct proc *p;
+
+  p = myproc();
+  if(p->alarm_interval == 0)
+    return 0;
+  if(p->alarm_last_ticks + p->alarm_interval < ticks)
+    return 0;
+  p->alarm_last_ticks = ticks;
+
+  if(save_trapframe() != 0)
+    panic("p->saved_trapframe == 0\n");
+
+  return 1;
 }
 

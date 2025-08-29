@@ -82,6 +82,8 @@ struct trapframe {
 
 enum procstate { UNUSED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
+enum alarmstate { ALARM_NONE, ALARM_IDLE, ALARM_START, ALARM_RUNNING, ALARM_STOP };
+
 // Per-process state
 struct proc {
   struct spinlock lock;
@@ -103,4 +105,11 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+
+  enum alarmstate alarm_status;
+  int alarm_interval;          //alarm interval
+  uint64 alarm_handler;        //alarm handler function
+  uint64 alarm_last_ticks;     //alarm start ticks
+
+  struct trapframe *saved_trapframe;
 };

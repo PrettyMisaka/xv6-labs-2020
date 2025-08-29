@@ -96,3 +96,34 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+uint64 sys_sigalarm(void)
+{
+  struct proc *p;
+  int alarm_interval;
+  uint64 alarm_handler;
+
+  if(argint(0, &alarm_interval) < 0)
+    return -1;
+
+  if(argaddr(1, &alarm_handler) < 0)
+    return -1;
+
+  p = myproc();
+  p->alarm_status = ALARM_IDLE;
+  p->alarm_handler = alarm_handler;
+  p->alarm_interval = alarm_interval;
+  p->alarm_last_ticks = sys_uptime();
+
+  return 0;
+}
+
+uint64 sys_sigreturn(void)
+{
+  struct proc *p;
+
+  p = myproc();
+  p->alarm_status = ALARM_STOP;
+
+  return 0;
+}
