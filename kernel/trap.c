@@ -67,9 +67,33 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+  } else if(r_scause() == 0xf || r_scause() == 0xd){
+    uint64 stval = r_stval();
+    uint64 sz = p->sz;
+
+    //va should small than p->sz but cannot small than stack addr
+    if(stval < sz && stval > PGROUNDDOWN(p->trapframe->sp)){
+      uint64 va = PGROUNDDOWN(stval);
+      char *mem = kalloc();
+
+      if(mem == 0){
+        // printf("usertrap(): kalloc failed\n");
+        goto lab_kill;
+      }
+      memset(mem, 0, PGSIZE);
+      if(mappages(p->pagetable, va, PGSIZE, (uint64)mem, PTE_W|PTE_R|PTE_U) != 0){
+        kfree(mem);
+        printf("usertrap(): mappages failed\n");
+        goto lab_kill;
+      }
+    } else {
+      // printf("usertrap(): sepc > sz\n");
+      goto lab_kill;
+    }
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+lab_kill:
     p->killed = 1;
   }
 
