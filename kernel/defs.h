@@ -171,6 +171,12 @@ uint64          walkaddr(pagetable_t, uint64);
 int             copyout(pagetable_t, uint64, char *, uint64);
 int             copyin(pagetable_t, char *, uint64, uint64);
 int             copyinstr(pagetable_t, char *, uint64, uint64);
+pte_t *         walk(pagetable_t, uint64, int);
+void            cowcntmapinit();
+void            cowcnt_add(uint64 va, uint8 flag);
+int             cow_trap_handler(uint64 stval);
+uint8           cowcnt_get(uint64 pa);
+void            cowcnt_set(uint64 pa, uint8 val);
 
 // plic.c
 void            plicinit(void);

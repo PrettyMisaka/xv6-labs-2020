@@ -67,9 +67,16 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+  } else if(r_scause() == 0xf || r_scause() == 0xd ){
+  // } else if(r_scause() == 0xf || r_scause() == 0xc  || r_scause() == 0xd ){
+  // } else if(r_scause() == 0xd ){
+    cow_trap_handler(r_stval());
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+    // pte_t *pte;
+    // pte = walk(p->pagetable, PGROUNDDOWN(r_stval()), 0);
+    // printf("            page:%p cow:%d flasg:%x\n", PGROUNDDOWN(r_stval()), (PTE_FLAGS(*pte) & PTE_COW) == PTE_COW, PTE_FLAGS(*pte));
     p->killed = 1;
   }
 

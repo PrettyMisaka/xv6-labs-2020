@@ -5,11 +5,32 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
+
+// #define VM_DEBUG
 
 /*
  * the kernel's page table.
  */
 pagetable_t kernel_pagetable;
+
+#define COW_MAX_STORE_PAGE (128*1024*1024/(PGSIZE*PGSIZE))
+uint8 *cow_cnt_map[COW_MAX_STORE_PAGE] = {0};
+struct spinlock cow_lock;
+
+#define COW_GET_VA2HASHADDR(pa) (&cow_cnt_map[((pa & 0x7fffffff) >> 12)/PGSIZE][((pa & 0x7fffffff) >> 12)%PGSIZE])
+#define COW_ADD_VA2HASH(pa, x) \
+  do{ uint8 *cnt = COW_GET_VA2HASHADDR(pa); *cnt += x; }while(0)
+#ifdef VM_DEBUG
+#define COW_DEBUG_LOG(pagetable, va, pa) \
+  printf("%s: pid:%d %p %p cow cnt:%d index:[%d][%d] flag:%x\n", \
+      __func__, myproc()->pid, va, \
+      (uint64)pa, cowcnt_get((uint64)pa),(((uint64)pa & 0x7fffffff) >> 12)/PGSIZE,(((uint64)pa & 0x7fffffff) >> 12)%PGSIZE,\
+      PTE_FLAGS(*walk(pagetable,PGROUNDDOWN(va),0)))
+#else
+  #define COW_DEBUG_LOG(pagetable, va, pa) 
+#endif
 
 extern char etext[];  // kernel.ld sets this to end of kernel code.
 
@@ -54,6 +75,19 @@ kvminithart()
 {
   w_satp(MAKE_SATP(kernel_pagetable));
   sfence_vma();
+}
+
+void
+cowcntmapinit()
+{
+  printf("%s:",__func__);
+  initlock(&cow_lock, "cow");
+  for(int i = 0; i < COW_MAX_STORE_PAGE; i++){
+    cow_cnt_map[i] = (uint8 *)kalloc();
+    memset((void *)cow_cnt_map[i], 0, PGSIZE);
+    printf(" %p", cow_cnt_map[i]);
+  }
+  printf("\n");
 }
 
 // Return the address of the PTE in page table pagetable
@@ -180,17 +214,28 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
     panic("uvmunmap: not aligned");
 
   for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
+    acquire(&cow_lock);
     if((pte = walk(pagetable, a, 0)) == 0)
       panic("uvmunmap: walk");
     if((*pte & PTE_V) == 0)
       panic("uvmunmap: not mapped");
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
+    if(*pte & PTE_COW){
+      cowcnt_add(PTE2PA(*pte), 0);
+      COW_DEBUG_LOG(pagetable,a,PTE2PA(*pte));
+      if(cowcnt_get(PTE2PA(*pte)) != 0){
+        *pte = 0;
+        release(&cow_lock);
+        continue;
+      }
+    }
     if(do_free){
       uint64 pa = PTE2PA(*pte);
       kfree((void*)pa);
     }
     *pte = 0;
+    release(&cow_lock);
   }
 }
 
@@ -247,6 +292,10 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
       uvmdealloc(pagetable, a, oldsz);
       return 0;
     }
+    acquire(&cow_lock);
+    cowcnt_set((uint64)mem,1);
+    COW_DEBUG_LOG(pagetable, a, mem);
+    release(&cow_lock);
   }
   return newsz;
 }
@@ -299,6 +348,118 @@ uvmfree(pagetable_t pagetable, uint64 sz)
   freewalk(pagetable);
 }
 
+inline uint8 cowcnt_get(uint64 pa)
+{
+  return *COW_GET_VA2HASHADDR(pa);
+}
+
+inline void cowcnt_set(uint64 pa, uint8 val)
+{
+  *COW_GET_VA2HASHADDR(pa) = val;
+}
+
+// flag == 1 add, flag == 0 sub
+void cowcnt_add(uint64 pa, uint8 flag)
+{
+  uint8 val = flag?1:-1;
+
+  if(flag == 0 && (cowcnt_get(pa) == 0)){
+    printf("cowcnt_add: %p\n", pa);
+    panic("cowcnt_add: cow cnt == 0 cannot sub");
+  }
+  if(flag && cowcnt_get(pa) == 0xff){
+    panic("cowcnt_add: cowcnt_get(pa) == 0xff cannot add");
+  }
+
+  COW_ADD_VA2HASH(pa, val);
+}
+
+/*
+ * @return 0 success | -1 not cow page | 1 kalloc failed | 2 va >= MAXVA
+ */
+int cow_remap_cowpage(pagetable_t pagetable, uint64 va)
+{
+  uint64 pa;
+  pte_t *pte;
+  uint flags;
+  char *mem;
+
+  va = PGROUNDDOWN(va);
+  if(va >= MAXVA){
+    myproc()->killed = 1;
+    return 2;
+  }
+  acquire(&cow_lock);
+  if((pte = walk(pagetable, va, 0)) == 0){
+    // panic("cow_remap_cowpage: pte should exist");
+    myproc()->killed = 1;
+    release(&cow_lock);
+    return 2;
+  }
+  if((*pte & PTE_V) == 0){
+    // panic("cow_remap_cowpage: page not present");
+    myproc()->killed = 1;
+    release(&cow_lock);
+    return 2;
+  }
+
+  pa = PTE2PA(*pte);
+  flags = PTE_FLAGS(*pte);
+
+  if((flags & PTE_COW) == 0){
+    release(&cow_lock);
+    return -1;
+  }
+
+  flags &= (~PTE_COW);
+  flags |= PTE_W;
+
+  cowcnt_add(pa, 0);
+  COW_DEBUG_LOG(myproc()->pagetable, va, pa);
+  //only one proc use the page
+  if(cowcnt_get(pa) == 0){
+    //remove PTE_COW flag and add PTE_W flag
+    cowcnt_add(pa, 1);
+    *pte &= (~0x3FF);
+    *pte |= flags;
+    release(&cow_lock);
+    
+    return 0;
+  }
+
+  if((mem = kalloc()) == 0){
+    myproc()->killed = 1;
+    release(&cow_lock);
+    return 1;
+  }
+  memmove(mem, (char*)pa, PGSIZE);
+  cowcnt_add((uint64)mem, 1);
+  *pte = PA2PTE(mem) | flags | PTE_V;
+  COW_DEBUG_LOG(myproc()->pagetable, va, mem);
+  release(&cow_lock);
+
+  return 0;
+}
+
+int cow_trap_handler(uint64 stval)
+{
+  struct proc *p;
+  int ret;
+
+  p = myproc();
+  ret = cow_remap_cowpage(p->pagetable, stval);
+  if(ret == -1){
+    printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
+    printf("            sepc=%p stval=%p\n", r_sepc(), stval);
+    printf("pid:%d page:%p va:%p\n", myproc()->pid, PGROUNDDOWN(stval), stval);
+    panic("PTE_COW != 1");
+  } else if(ret == 1){
+    return -1;
+  }
+
+  return 0;
+}
+
 // Given a parent process's page table, copy
 // its memory into a child's page table.
 // Copies both the page table and the
@@ -311,28 +472,46 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
+  // char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
+    acquire(&cow_lock);
     if((pte = walk(old, i, 0)) == 0)
       panic("uvmcopy: pte should exist");
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
-      goto err;
+    // COW_DEBUG_LOG(i, pa);
+    COW_DEBUG_LOG(old, i, pa);
+    if(flags & PTE_COW){
+      cowcnt_add(pa, 1);
+    } else if(flags & PTE_W){
+      flags &= (~PTE_W);
+      flags |= PTE_COW;
+      // cowcnt_add(pa, 1);
+      cowcnt_add(pa, 1);
     }
+    // printf("%x\n",flags);
+    // if((mem = kalloc()) == 0)
+    //   goto err;
+    // memmove(mem, (char*)pa, PGSIZE);
+    // if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
+    //   kfree(mem);
+    //   goto err;
+    // }
+    *pte = PA2PTE(pa) | flags | PTE_V;
+    if(mappages(new, i, PGSIZE, (uint64)pa, flags) != 0){
+      panic("uvmcopy: cow rmap failed");
+    }
+    COW_DEBUG_LOG(old, i, pa);
+    release(&cow_lock);
   }
   return 0;
 
- err:
-  uvmunmap(new, 0, i / PGSIZE, 1);
-  return -1;
+//  err:
+//   uvmunmap(new, 0, i / PGSIZE, 1);
+//   return -1;
 }
 
 // mark a PTE invalid for user access.
@@ -355,12 +534,18 @@ int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
   uint64 n, va0, pa0;
+  int ret;
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
+    ret = cow_remap_cowpage(pagetable, va0);
+    if(ret == 1 || ret == 2){
+      return -1;
+    }
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0)
       return -1;
+    COW_DEBUG_LOG(pagetable, dstva, (pa0 + (dstva - va0)));
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
