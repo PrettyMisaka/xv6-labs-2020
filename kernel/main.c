@@ -5,6 +5,7 @@
 #include "defs.h"
 
 volatile static int started = 0;
+volatile int ncpu = 1;
 
 // start() jumps here in supervisor mode on all CPUs.
 void
@@ -19,6 +20,7 @@ main()
     printf("\n");
     printf("xv6 kernel is booting\n");
     printf("\n");
+    printf("CPU: %d\n", ncpu);
     kinit();         // physical page allocator
     kvminit();       // create kernel page table
     kvminithart();   // turn on paging
@@ -39,8 +41,10 @@ main()
     __sync_synchronize();
     started = 1;
   } else {
-    while(started == 0)
-      ;
+    while(started == 0){
+      if(cpuid() + 1 > ncpu)
+        ncpu = cpuid() + 1;
+    };
     __sync_synchronize();
     printf("hart %d starting\n", cpuid());
     kvminithart();    // turn on paging
