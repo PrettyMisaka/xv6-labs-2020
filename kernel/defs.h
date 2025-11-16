@@ -53,6 +53,7 @@ int             readi(struct inode*, int, uint64, uint, uint);
 void            stati(struct inode*, struct stat*);
 int             writei(struct inode*, int, uint64, uint, uint);
 void            itrunc(struct inode*);
+int             get_absolute_path(struct inode *dp, char *path, uint file_inum);
 
 // ramdisk.c
 void            ramdiskinit(void);

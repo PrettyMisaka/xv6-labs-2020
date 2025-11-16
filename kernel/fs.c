@@ -629,6 +629,85 @@ dirlink(struct inode *dp, char *name, uint inum)
 
 // Paths
 
+struct inode*
+get_dename_inode(struct inode *dp, int tar_inum,
+                char *name, int *isroot)
+{
+  uint off, inum = 0;
+  struct dirent de;
+  *isroot = 0;
+
+  if(dp->type != T_DIR)
+    panic("dirlookup not DIR");
+
+  for(off = 0; off < dp->size; off += sizeof(de)){
+    if(readi(dp, 0, (uint64)&de, off, sizeof(de)) != sizeof(de))
+      panic("dirlookup read");
+    if(de.inum == 0)
+      continue;
+    if(de.inum == 1 && namecmp(".", de.name) == 0)
+      *isroot = 1;
+    if(de.inum == tar_inum)
+      strncpy(name, de.name, DIRSIZ);
+    if(namecmp("..", de.name) == 0)
+      inum = de.inum;
+  }
+
+  if(inum)
+    return iget(dp->dev, inum);
+
+  return 0;
+}
+
+// will auto use iunlock to un lock dp
+int
+get_absolute_path(struct inode *dp, char *path, uint file_inum)
+{
+  char path_list[10][DIRSIZ] = {0};
+  struct inode *_dp;
+  int de_is_root = 0;
+  int len = 0;
+  int i;
+
+  if(dp->type != T_DIR)
+    panic("get_absolute_path dirlookup not DIR");
+
+  while(!de_is_root)
+  {
+    _dp = get_dename_inode(dp, file_inum, 
+      path_list[len], &de_is_root);
+    iunlock(dp);
+    
+    if(dp == 0)
+      panic("get_absolute_path dp is empty");
+
+    ilock(_dp);
+    file_inum = dp->inum;
+    dp = _dp;
+    len++;
+  }
+  iunlock(dp);
+  len--;
+
+  while(len >= 0)
+  {
+    *path = '/';
+    path++;
+    i = 0;
+
+    while(path_list[len][i] != '\0')
+    {
+      *path = path_list[len][i];
+      path++;
+      i++;
+    }
+    len--;
+  }
+  *path = '\0';
+
+  return 0;
+}
+
 // Copy the next path element from path into name.
 // Return a pointer to the element following the copied one.
 // The returned path has no leading slashes,

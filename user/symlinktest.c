@@ -83,6 +83,7 @@ testsymlink(void)
   if(fd2 < 0)
     fail("failed to open b");
   read(fd2, &c, 1);
+  printf("%s read c:%c\n", __func__, c);
   if (c != 'a')
     fail("failed to read bytes from b");
 

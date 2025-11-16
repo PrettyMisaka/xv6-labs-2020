@@ -181,6 +181,60 @@ isdirempty(struct inode *dp)
   return 1;
 }
 
+static struct inode*
+create(char *path, short type, short major, short minor);
+
+uint64
+sys_symlink(void)
+{
+  char name[DIRSIZ], new[MAXPATH], old[MAXPATH];
+  char absolute_path[MAXPATH] = {0};
+  struct inode *dp, *ip;
+
+  if(argstr(0, old, MAXPATH) < 0 || argstr(1, new, MAXPATH) < 0)
+    return -1;
+
+  begin_op();
+  if((ip = namei(old)) == 0){
+    memmove(absolute_path, old, MAXPATH);
+  }else{
+    if((dp = nameiparent(old, name)) != 0){
+      ilock(dp);
+      get_absolute_path(dp, absolute_path, ip->inum);
+    }
+
+    ilock(ip);
+    if(ip->type == T_DIR){
+      iunlockput(ip);
+      end_op();
+      return -1;
+    }
+    iunlockput(ip);
+  }
+
+  printf("%s %d %s\n", __func__, __LINE__, absolute_path);
+
+  if((dp = nameiparent(new, name)) == 0)
+    goto bad;
+
+  ip = create(new, T_SYMLINK, 0, 0);
+  if(ip == 0){
+    goto bad;
+  }
+  if(writei(ip, 0, (uint64)absolute_path, 0, MAXPATH) != MAXPATH)
+    panic("sys_symlink: writei");
+  iupdate(ip);
+  iunlockput(ip);
+
+  end_op();
+
+  return 0;
+
+bad:
+  end_op();
+  return -1;
+}
+
 uint64
 sys_unlink(void)
 {
@@ -283,6 +337,36 @@ create(char *path, short type, short major, short minor)
   return ip;
 }
 
+static struct inode*
+symlink_walk(struct inode* ip)
+{
+  char path[MAXPATH];
+  int inum_list_len = 0;
+  int inum_list[6];
+  int i;
+
+  while(ip->type == T_SYMLINK){
+    for(i = 0; i < inum_list_len; i++){
+      if(inum_list[i] == ip->inum){
+        iunlockput(ip);
+        return 0;
+      }
+    }
+    inum_list[inum_list_len] = ip->inum;
+    inum_list_len++;
+
+    if(readi(ip, 0, (uint64)path, 0, MAXPATH) != MAXPATH)
+      panic("readi");
+    printf("%s %d %s\n",__func__, i, path);
+    iunlock(ip);
+    ip = namei(path);
+    if(ip == 0)
+      return 0;
+    ilock(ip);
+  }
+  return ip;
+}
+
 uint64
 sys_open(void)
 {
@@ -309,7 +393,11 @@ sys_open(void)
       return -1;
     }
     ilock(ip);
-    if(ip->type == T_DIR && omode != O_RDONLY){
+    if(!(omode & O_NOFOLLOW) && ip->type == T_SYMLINK && (ip = symlink_walk(ip)) == 0){
+      end_op();
+      return -1;
+    }
+    if(ip->type == T_DIR && (omode & ~O_NOFOLLOW) != O_RDONLY){
       iunlockput(ip);
       end_op();
       return -1;
