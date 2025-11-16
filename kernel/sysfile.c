@@ -337,7 +337,7 @@ create(char *path, short type, short major, short minor)
   return ip;
 }
 
-static struct inode*
+struct inode*
 symlink_walk(struct inode* ip)
 {
   char path[MAXPATH];

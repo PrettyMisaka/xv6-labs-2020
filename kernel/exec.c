@@ -6,6 +6,10 @@
 #include "proc.h"
 #include "defs.h"
 #include "elf.h"
+#include "fs.h"
+#include "stat.h"
+#include "sleeplock.h"
+#include "file.h"
 
 static int loadseg(pde_t *pgdir, uint64 addr, struct inode *ip, uint offset, uint sz);
 
@@ -28,6 +32,10 @@ exec(char *path, char **argv)
     return -1;
   }
   ilock(ip);
+  if(ip->type == T_SYMLINK && (ip = symlink_walk(ip)) == 0){
+      end_op();
+      return -1;
+  }
 
   // Check ELF header
   if(readi(ip, 0, (uint64)&elf, 0, sizeof(elf)) != sizeof(elf))
