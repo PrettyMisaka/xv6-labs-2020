@@ -507,5 +507,12 @@ sys_mmap(void)
 uint64
 sys_munmap(void)
 {
-  return 0;
+  uint64 addr;
+  int len;
+
+  if(argaddr(0, &addr) < 0 ||
+    argint(1, &len) < 0 )
+    return 0;
+
+  return do_munmap(addr, len);
 }

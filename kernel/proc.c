@@ -353,6 +353,8 @@ exit(int status)
     }
   }
 
+  free_proc_vma(p);
+
   begin_op();
   iput(p->cwd);
   end_op();

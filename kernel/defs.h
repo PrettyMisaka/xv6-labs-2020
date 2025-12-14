@@ -167,6 +167,7 @@ int             uvmcopy(pagetable_t, pagetable_t, uint64);
 void            uvmfree(pagetable_t, uint64);
 void            uvmunmap(pagetable_t, uint64, uint64, int);
 void            uvmclear(pagetable_t, uint64);
+pte_t *         walk(pagetable_t pagetable, uint64 va, int alloc);
 uint64          walkaddr(pagetable_t, uint64);
 int             copyout(pagetable_t, uint64, char *, uint64);
 int             copyin(pagetable_t, char *, uint64, uint64);
@@ -188,6 +189,8 @@ void            mmapinit();
 uint64          do_mmap(uint64 vaddr, int length, int prot, int flags,
                     struct file *f, int offset);
 int             check_mmap_page_and_alloc(uint64 stval);
+int             do_munmap(uint64 vaddr, int length);
+void            free_proc_vma(struct proc *p);
 
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x)/sizeof((x)[0]))
