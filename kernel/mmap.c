@@ -77,6 +77,7 @@ uint64 do_mmap(uint64 vaddr, int length, int prot, int flags,
     v->p = p;
     v->f = f;
     filedup(f);
+    v->vaddr = vaddr;
     v->data.flag = flags;
     v->data.prot = prot;
     v->data.len = length;
@@ -167,6 +168,7 @@ alloc_page:
             if(mappages(v->p->pagetable, vaddr, PGSIZE, (uint64)paddr, (v->data.prot << 1)|PTE_U) != 0){
                 panic("check_mmap_page_and_alloc: mmapages failed!");
             }
+            v->page_map |= (1 << (PGROUNDDOWN(offset)/PGSIZE));
             return 0;
         }
     }
@@ -178,6 +180,7 @@ alloc_page:
     if(mappages(v->p->pagetable, vaddr, PGSIZE, (uint64)paddr, (v->data.prot << 1)|PTE_U) != 0){
         panic("check_mmap_page_and_alloc: mmapages failed!");
     }
+    v->page_map |= (1 << (PGROUNDDOWN(offset)/PGSIZE));
     memset(paddr, 0, PGSIZE);
     ilock(f->ip);
     readi(f->ip, 1, vaddr, PGROUNDDOWN(offset) + v->data.f_offset, PGSIZE);
@@ -186,18 +189,24 @@ alloc_page:
     return 0;
 }
 
-void free_vma(struct proc *p, struct vma *v)
+void free_vma(struct proc *p, struct vma *v, int idx)
 {
     struct file *f;
     uint64 vpage = PGROUNDDOWN(v->vaddr);
     uint64 vpage_max;
+    uint64 vbegin, vend;
     pte_t *pte;
     int len;
     int w;
     int free_page = 1;
+    uint16 mask = (idx == -1)?0xffff:1 << idx;
 
     f = v->f;
     w = (v->data.prot & PROT_WRITE && f->writable)?1:0;
+    
+    v->page_map &= ~(mask);
+    if(v->page_map != 0)
+        goto skip_release_vma;
 
     if(v->data.flag == MAP_SHARED){
         acquire(&vma_lock);
@@ -230,8 +239,15 @@ skip_shared_unlink:
         release(&vma_lock);
     }
 
+skip_release_vma:
     vpage_max = PGROUNDDOWN(vpage + v->data.len);
-    for (uint64 _vaddr = vpage; _vaddr < PGROUNDUP(vpage + v->data.len); _vaddr += PGSIZE)
+    vbegin = vpage;
+    vend = PGROUNDUP(vpage + v->data.len);
+    if(mask != 0xffff){
+        vbegin = vpage + idx*PGSIZE;
+        vend = vbegin + PGSIZE;
+    }
+    for (uint64 _vaddr = vbegin; _vaddr < vend; _vaddr += PGSIZE)
     {
         pte = walk(p->pagetable, _vaddr, 0);
         if(pte == 0 || 
@@ -261,6 +277,7 @@ int do_munmap(uint64 vaddr, int length)
     struct vma *v = p->proc_vma_next;
     struct vma *_v = 0;
     uint64 vpage = PGROUNDDOWN(vaddr);
+    int idx;
     // uint64 pa;
 
     while(v != 0){
@@ -269,21 +286,30 @@ int do_munmap(uint64 vaddr, int length)
         _v = v;
         v = v->proc_vma_next;
     }
-    return -1;
+    return 0;
 
 munmap_page:
-    if(length < v->data.len)
+    if(length < 0)
         return -1;
-
-    free_vma(p, v);
-    acquire(&vma_lock);
-    if(_v == 0){
-        p->proc_vma_next = v->proc_vma_next;
-    }else{
-        _v->proc_vma_next = v->proc_vma_next;
+    idx = (vpage - v->vaddr)/PGSIZE;
+    for(int i = 0; i < PGROUNDUP(length); i++)
+        free_vma(p, v, idx+i);
+    if(v->page_map == 0){
+        acquire(&vma_lock);
+        acquire(&v->lock);
+        if(_v == 0){
+            p->proc_vma_next = v->proc_vma_next;
+        }else{
+            acquire(&_v->lock);
+            _v->proc_vma_next = v->proc_vma_next;
+            release(&_v->lock);
+        }
+        v->used = 0;
+        v->proc_vma_next = 0;
+        // fileclose(v->f);
+        release(&v->lock);
+        release(&vma_lock);
     }
-    v->proc_vma_next = 0;
-    release(&vma_lock);
 
     return 0;
 }
@@ -293,9 +319,15 @@ void free_proc_vma(struct proc *p)
     struct vma *v = p->proc_vma_next;
 
     while(v != 0){
-        free_vma(p, v);
+        free_vma(p, v, -1);
+        if(v->page_map == 0){
+            acquire(&vma_lock);
+            v->used = 0;
+            release(&vma_lock);
+        }
 
         v = v->proc_vma_next;
     }
+    p->proc_vma_next = 0;
 }
 
