@@ -105,7 +105,8 @@ uint64 do_mmap(uint64 vaddr, int length, int prot, int flags,
                 release(&_v->lock);
                 continue;
             }
-            if(memcmp(&v->data, &_v->data, sizeof(struct vma_data)) == 0){
+            if(memcmp(&v->data, &_v->data, sizeof(struct vma_data)) == 0 &&
+                f == _v->f){
                 release(&_v->lock);
                 goto add_to_list;
             }
@@ -198,7 +199,7 @@ void free_vma(struct proc *p, struct vma *v, int idx)
     pte_t *pte;
     int len;
     int w;
-    int free_page = 1;
+    int free_page = (v->data.flag == MAP_SHARED)?0:1;
     uint16 mask = (idx == -1)?0xffff:1 << idx;
 
     f = v->f;
@@ -214,7 +215,7 @@ void free_vma(struct proc *p, struct vma *v, int idx)
         struct vma *_v_n_head = _v;
         if(_v == v){
             if(v->shared_vma_next == 0){
-                free_page = 0;
+                free_page = 1;
                 goto skip_shared_unlink;
             }
             _v = _v_n_head = _v->shared_vma_next;
@@ -292,7 +293,7 @@ munmap_page:
     if(length < 0)
         return -1;
     idx = (vpage - v->vaddr)/PGSIZE;
-    for(int i = 0; i < PGROUNDUP(length); i++)
+    for(int i = 0; i < PGROUNDUP(length - 1)/PGSIZE; i++)
         free_vma(p, v, idx+i);
     if(v->page_map == 0){
         acquire(&vma_lock);
@@ -329,5 +330,54 @@ void free_proc_vma(struct proc *p)
         v = v->proc_vma_next;
     }
     p->proc_vma_next = 0;
+}
+
+struct vma * vma_clone(struct vma *sv, struct proc *np)
+{
+    struct vma *nv = alloc_vma();
+    struct vma *v;
+
+    acquire(&nv->lock);
+    nv->p = np;
+    nv->f = filedup(sv->f);
+    nv->vaddr = sv->vaddr;
+    nv->page_map = sv->page_map;
+    memmove(&nv->data, &sv->data, sizeof(struct vma_data));
+    release(&nv->lock);
+
+    printf("%s %d %d\n",__func__,nv->data.flag,sv->data.flag);
+
+    if(nv->data.flag == MAP_SHARED){
+        v = sv->shared_vma_head;
+        if(v == 0)
+            panic("vma_clone: shared_vma_head is NULL");
+        nv->shared_vma_head = v;
+        while(v->shared_vma_next != 0)
+            v = v->shared_vma_next;
+        v->shared_vma_next = nv;            
+    }
+
+    return nv;
+}
+
+void fork_vma(struct proc *p, struct proc *np)
+{
+    struct vma *v, *nv;
+
+    v = p->proc_vma_next;
+    if(v == 0){
+        np->proc_vma_next = 0;
+        return;
+    }
+    nv = vma_clone(v, np);
+    np->proc_vma_next = nv;
+    v = v->proc_vma_next;
+
+    while (v != 0){
+        nv->proc_vma_next = vma_clone(v, np);
+        nv = nv->proc_vma_next;
+
+        v = v->proc_vma_next;
+    }
 }
 

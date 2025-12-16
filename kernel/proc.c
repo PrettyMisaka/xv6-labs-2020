@@ -281,6 +281,8 @@ fork(void)
     return -1;
   }
   np->sz = p->sz;
+  np->msz = p->msz;
+  fork_vma(p, np);
 
   np->parent = p;
 

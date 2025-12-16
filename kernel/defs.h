@@ -191,6 +191,7 @@ uint64          do_mmap(uint64 vaddr, int length, int prot, int flags,
 int             check_mmap_page_and_alloc(uint64 stval);
 int             do_munmap(uint64 vaddr, int length);
 void            free_proc_vma(struct proc *p);
+void            fork_vma(struct proc *p, struct proc *np);
 
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x)/sizeof((x)[0]))
