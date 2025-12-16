@@ -296,6 +296,7 @@ munmap_page:
     for(int i = 0; i < PGROUNDUP(length - 1)/PGSIZE; i++)
         free_vma(p, v, idx+i);
     if(v->page_map == 0){
+        fileclose(v->f);
         acquire(&vma_lock);
         acquire(&v->lock);
         if(_v == 0){
