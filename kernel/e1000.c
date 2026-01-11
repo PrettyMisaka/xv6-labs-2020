@@ -8,6 +8,8 @@
 #include "e1000_dev.h"
 #include "net.h"
 
+// #define E1000_DEBUG
+
 #define TX_RING_SIZE 16
 static struct tx_desc tx_ring[TX_RING_SIZE] __attribute__((aligned(16)));
 static struct mbuf *tx_mbufs[TX_RING_SIZE];
@@ -92,6 +94,16 @@ e1000_init(uint32 *xregs)
   regs[E1000_IMS] = (1 << 7); // RXDW -- Receiver Descriptor Write Back
 }
 
+void print_hex(char *src, unsigned int len)
+{
+  char *p = src;
+  for(unsigned int i = 0; i < len; i++)
+  {
+    printf("0x%x ", (unsigned char)*p);
+    p++;
+  }
+}
+
 int
 e1000_transmit(struct mbuf *m)
 {
@@ -102,6 +114,42 @@ e1000_transmit(struct mbuf *m)
   // the TX descriptor ring so that the e1000 sends it. Stash
   // a pointer so that it can be freed after sending.
   //
+
+  struct mbuf *_m = m;
+  uint32 head, tail;
+  struct tx_desc *tdesc;
+
+#ifdef E1000_DEBUG
+  printf("\n===== mbuf =====\n");
+  while(_m != 0)
+  {
+    printf("%p, %d, \n", _m, _m->len);
+    print_hex(_m->head, _m->len);
+    printf("\n");
+    _m = _m->next;
+  }
+  printf("================\n");
+#endif
+
+  _m = m;
+  head = regs[E1000_TDH];
+  tail = regs[E1000_TDT];
+  if((tail + 1)%TX_RING_SIZE == head)
+    return -1;
+
+  tdesc = &tx_ring[tail];
+  memset(tdesc, 0, sizeof(struct tx_desc));
+  tdesc->addr = (uint64)_m->head;
+  tdesc->length = _m->len;
+  tdesc->cmd = E1000_TXD_CMD_EOP | E1000_TXD_CMD_RS;
+
+  if(tx_mbufs[tail]){
+    mbuffree(tx_mbufs[tail]);
+  }
+  tx_mbufs[tail] = _m;
+
+  tail = (tail + 1)%TX_RING_SIZE;
+  regs[E1000_TDT] = tail;
   
   return 0;
 }
@@ -115,6 +163,33 @@ e1000_recv(void)
   // Check for packets that have arrived from the e1000
   // Create and deliver an mbuf for each packet (using net_rx()).
   //
+
+  struct mbuf *m;
+  uint32 head, tail;
+  struct rx_desc *rdesc;
+
+  while (1)
+  {
+    head = regs[E1000_RDH];
+    tail = regs[E1000_RDT];
+    tail = (tail + 1)%TX_RING_SIZE;
+    if(tail == head)
+      return;
+
+    rdesc = &rx_ring[tail];
+#ifdef E1000_DEBUG
+    printf("%s %d %d %p\n",__func__, head, tail, rdesc);
+#endif
+    m = mbufalloc(0);
+    memmove( m->buf, (void *)rdesc->addr, rdesc->length);
+    // m->head = (char *)rdesc;
+    m->len = rdesc->length;
+    rdesc->status = 0;
+    net_rx(m);
+
+    regs[E1000_RDT] = tail;
+  }
+
 }
 
 void
